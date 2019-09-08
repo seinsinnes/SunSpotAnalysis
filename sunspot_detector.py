@@ -10,10 +10,12 @@ import re
 from datetime import datetime
 import itertools
 import math
+import matplotlib.pyplot as plt
+import pandas as pd
 
 ap = argparse.ArgumentParser()
-ap.add_argument("-i", "--images", required=True,
-	help="path to the image folder")
+ap.add_argument("-i", "--images", required=True, help="Path to the image folder")
+ap.add_argument('-d', "--display", help='Display image frames during processing', action='store_true')
 
 args = ap.parse_args()
 
@@ -118,14 +120,16 @@ imageFilenames.sort()
 
 oldCenters = None
 lastRecordTime = None
+diffT = None
+samples = pd.DataFrame(columns=['latitude','period'])
 for i in imageFilenames:
 	timeString = re.search(r'[\d]{8}_[\d]{4}', i).group()
 	recordTime = datetime.strptime(timeString, '%Y%m%d_%H%M')
 	print(str(recordTime)+":")
 	if lastRecordTime:
-		print("DT = {DT}\n".format(DT=recordTime-lastRecordTime))
+		diffT = recordTime-lastRecordTime
+		print("DT = {DT}\n".format(DT=diffT))
 	lastRecordTime = recordTime
-
 	# load image, convert to grayscale, and blur it
 	image = cv2.imread(i)
 
@@ -149,8 +153,22 @@ for i in imageFilenames:
 		l1 = (toOrthographicSphereCoords(tpc[1][0],tpc[1][1], sunRadius)/math.pi)*180
 		print("L = ({L1_0},{L1_1})".format(L1_0=l1[0],L1_1=l1[1]))
 		diffL = l1 - l0
-		print("DL = ({DL1},{DL2})\n".format(DL1=diffL[0],DL2=diffL[1]))
+		print("DL = ({DL1},{DL2})".format(DL1=diffL[0],DL2=diffL[1]))
+		print(diffT)
+		if diffT:
+			w = diffL / diffT.total_seconds()
+			print("DL / DT = ({w1},{w2})\n".format(w1=w[0], w2=w[1]))
+			print("P = ({P1},{P2})\n".format(P1=360./(w[0]*86400), P2=360./(w[1]*86400)))
+			samples = samples.append({'latitude': (l0[1] + l1[1])/2.,'period': 360./(w[0]*86400)}, ignore_index=True)
+
 	oldCenters = newCenters
-	cv2.imshow("Image", image)
+	if args.display:
+		cv2.imshow("Image", image)
+		cv2.waitKey(500)
 	print("-"*30)
-	cv2.waitKey(500)
+#plt.hexbin(latitudeSamples,periodSamples,gridsize=(15,150))
+plt.scatter(samples['latitude'],samples['period'],s=4)
+samples['bucket'] = pd.cut(samples['latitude'],np.arange(-60,60,5))
+print(samples.groupby(samples['bucket'])['period'].median())
+plt.ylim(10,50)
+plt.show()
