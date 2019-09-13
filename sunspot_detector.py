@@ -122,6 +122,7 @@ oldCenters = None
 lastRecordTime = None
 diffT = None
 samples = pd.DataFrame(columns=['latitude','period'])
+activeVectorChains = []
 for i in imageFilenames:
 	timeString = re.search(r'[\d]{8}_[\d]{4}', i).group()
 	recordTime = datetime.strptime(timeString, '%Y%m%d_%H%M')
@@ -140,9 +141,20 @@ for i in imageFilenames:
 	blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 	#blurred = gray
 	blurred,sunRadius,sunCenter = findSun(blurred)
-	print(sunRadius)
+	print("Sun radius in pixels = {sunRadius}".format(sunRadius=sunRadius))
 	newCenters,image = findSunSpots(image,blurred)
 	timePairedCenters = matchSpotsBetweenFrames(oldCenters,newCenters)
+	print(timePairedCenters)
+	for tpc in timePairedCenters:
+		tpcChained = False
+		for chain in activeVectorChains:
+			if chain['positions'][-1][0] == tpc[0][0] and chain['positions'][-1][1] == tpc[0][1]:
+				chain['positions'].append(tpc[1])
+				chain['timeElapsed'] += diffT.total_seconds()
+				tpcChained = True
+		if not tpcChained:
+			activeVectorChains.append({'positions':[tpc[0],tpc[1]],'timeElapsed' : diffT.total_seconds()})
+
 	for tpc in timePairedCenters:
 		cv2.arrowedLine(image, tuple(tpc[0]),tuple(tpc[1]),(0, 255, 0),2)
 		tpc = (tpc[0] - np.array(sunCenter),tpc[1] - np.array(sunCenter))
@@ -157,15 +169,22 @@ for i in imageFilenames:
 		print(diffT)
 		if diffT:
 			w = diffL / diffT.total_seconds()
+			periodOfRotation = (360./(w[0]*86400), 360./(w[1]*86400))
 			print("DL / DT = ({w1},{w2})\n".format(w1=w[0], w2=w[1]))
-			print("P = ({P1},{P2})\n".format(P1=360./(w[0]*86400), P2=360./(w[1]*86400)))
-			samples = samples.append({'latitude': (l0[1] + l1[1])/2.,'period': 360./(w[0]*86400)}, ignore_index=True)
+			print("P = ({P1},{P2})\n".format(P1=periodOfRotation[0], P2=periodOfRotation[1]))
+			samples = samples.append({'latitude': (l0[1] + l1[1])/2.,'period': periodOfRotation[0]}, ignore_index=True)
+			"""
+			if periodOfRotation[0] > samples['period'].quantile(0.75) or periodOfRotation[0] < samples['period'].quantile(0.25):
+				cv2.imshow("Image", image)
+				cv2.waitKey(0)"""
 
 	oldCenters = newCenters
 	if args.display:
 		cv2.imshow("Image", image)
 		cv2.waitKey(500)
 	print("-"*30)
+for chain in activeVectorChains:
+	print(len(chain['positions']),chain['timeElapsed'])
 #plt.hexbin(latitudeSamples,periodSamples,gridsize=(15,150))
 plt.scatter(samples['latitude'],samples['period'],s=4)
 samples['bucket'] = pd.cut(samples['latitude'],np.arange(-60,60,5))
