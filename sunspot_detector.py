@@ -19,28 +19,44 @@ ap.add_argument('-d', "--display", help='Display image frames during processing'
 
 args = ap.parse_args()
 
-def findSun(image):
-	# detect circles in the image
-	circles = cv2.HoughCircles(image, cv2.HOUGH_GRADIENT, 1.2, 100)
+class SunImage:
+	def __init__(self,image):
+		self.image = image
+		self.radius = -1
+		self.centerCoords = None
+		self.findSun(image)
+	
+	def findSun(self, image):
+		circles = cv2.HoughCircles(image, cv2.HOUGH_GRADIENT, 1.2, 100)
 
-	# ensure at least some circles were found
-	if circles is not None:
-		circles = np.round(circles[0, :]).astype("int")
-		for (xc, yc, r) in circles:
-			H, W = image.shape
-			x, y = np.meshgrid(np.arange(W), np.arange(H))
-			d2 = (x - xc)**2 + (y - yc)**2
-			mask = d2 < (r-10)**2
-			image[~mask] = 0
-			cv2.circle(image, (xc, yc), r, 0, 7)
+		if circles is not None:
+			circles = np.round(circles[0, :]).astype("int")
+			for (xc, yc, r) in circles:
+				H, W = image.shape
+				x, y = np.meshgrid(np.arange(W), np.arange(H))
+				d2 = (x - xc)**2 + (y - yc)**2
+				mask = d2 < (r-10)**2
+				image[~mask] = 0
+				cv2.circle(image, (xc, yc), r, 0, 7)
 
-			#cv2.rectangle(image, (xc - 5, yc - 5), (xc + 5, yc + 5), (0, 128, 255), -1)
+			self.image = image
+			self.radius = r
+			self.centerCoords = (xc,yc)
 
-		# show the output image
-		#cv2.imshow("output", image)
-		#cv2.waitKey(0)
-		return image,r,(xc,yc)
+class SunSpot:
+	def __init__(self, sunImage, cartesianCoords,filename,time):
+		self.sunImage = sunImage
+		self.cartesianCoords = cartesianCoords
+		self.filename = filename
+		self.time = time
 
+	def getSunCenteredCartestianCoords(self):
+		return self.cartesianCoords - np.array(self.sunImage.centerCoords)
+	
+	def getOrthographicSphereCoordsDegrees(self):
+		sunCenteredCoords = self.getSunCenteredCartestianCoords()
+		return (toOrthographicSphereCoords(sunCenteredCoords[0], sunCenteredCoords[1], self.sunImage.radius)/math.pi)*180
+	
 def toOrthographicSphereCoords(x,y, R):
     p = np.sqrt(x**2 + y**2)
     c = np.arcsin(p/R)
@@ -61,25 +77,25 @@ def filterPossibleMatches(matchedPairs):
 	remainingPairs = matchedPairs
 	while(remainingPairs):
 		minPair = min(remainingPairs , key=lambda x: abs(x[2]-averageMovement))
-		remainingPairs = list(filter(lambda x: not np.array_equal(x[0], minPair[0]), remainingPairs))
-		remainingPairs = list(filter(lambda x: not np.array_equal(x[1], minPair[1]), remainingPairs))
+		remainingPairs = list(filter(lambda x: not np.array_equal(x[0].cartesianCoords, minPair[0].cartesianCoords), remainingPairs))
+		remainingPairs = list(filter(lambda x: not np.array_equal(x[1].cartesianCoords, minPair[1].cartesianCoords), remainingPairs))
 		filteredPairs.append(minPair)
 	return filteredPairs
 
-def matchSpotsBetweenFrames(oldCenters, newCenters):
-	if not oldCenters or not newCenters:
+def matchSpotsBetweenFrames(previousSunSpots, newSunSpots):
+	if not previousSunSpots or not newSunSpots:
 		return []
 	allPairedCenters = []
-	for oc in oldCenters:
-		for nc in newCenters:
-			movementVector = nc-oc
+	for oc in previousSunSpots:
+		for nc in newSunSpots:
+			movementVector = nc.cartesianCoords-oc.cartesianCoords
 			movementDistance = np.linalg.norm(movementVector)
 			if movementVector[0] > 0 and movementDistance < 70:
 				allPairedCenters.append((oc,nc,movementDistance))
 	
 	return filterPossibleMatches(allPairedCenters)
 
-def findSunSpots(image,blurred):
+def findSunSpots(sun, image, blurred, imagefilename, imagetime):
 	thresh = cv2.threshold(blurred, 140, 255, cv2.THRESH_BINARY)[1]
 
 	labels = measure.label(thresh, neighbors=8, background=0)
@@ -103,22 +119,22 @@ def findSunSpots(image,blurred):
 		return [],image
 	cntrs = contours.sort_contours(cntrs)[0]
 
-	spotCenters = []
+	sunSpots = []
 	for (i, c) in enumerate(cntrs):
 		(x, y, w, h) = cv2.boundingRect(c)
 		((cX, cY), radius) = cv2.minEnclosingCircle(c)
-		spotCenters.append(np.array((cX,cY),dtype=np.int32))
+		sunSpots.append(SunSpot(sun, np.array((cX,cY),dtype=np.int32), imagefilename, imagetime))
 		cv2.circle(image, (int(cX), int(cY)), int(radius),
 			(0, 0, 255), 3)
 		cv2.putText(image, "#{}".format(i + 1), (x, y - 15),
 			cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2)
-	cv2.circle(image, sunCenter, sunRadius, (0,255,0), 2)
-	return spotCenters,image
+	cv2.circle(image, sun.centerCoords, sun.radius, (0,255,0), 2)
+	return sunSpots,image
 
 imageFilenames = glob.glob("{imagePath}/*.jpg".format(imagePath=args.images)) + glob.glob("{imagePath}/*.png".format(imagePath=args.images))
 imageFilenames.sort()
 
-oldCenters = None
+previousSunSpots = None
 lastRecordTime = None
 diffT = None
 samples = pd.DataFrame(columns=['latitude','period'])
@@ -128,7 +144,7 @@ for i in imageFilenames:
 	recordTime = datetime.strptime(timeString, '%Y%m%d_%H%M')
 	print(str(recordTime)+":")
 	if lastRecordTime:
-		diffT = recordTime-lastRecordTime
+		diffT = recordTime - lastRecordTime
 		print("DT = {DT}\n".format(DT=diffT))
 	lastRecordTime = recordTime
 	# load image, convert to grayscale, and blur it
@@ -140,29 +156,30 @@ for i in imageFilenames:
 	#gray[gray > 250] = 0
 	blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 	#blurred = gray
-	blurred,sunRadius,sunCenter = findSun(blurred)
-	print("Sun radius in pixels = {sunRadius}".format(sunRadius=sunRadius))
-	newCenters,image = findSunSpots(image,blurred)
-	timePairedCenters = matchSpotsBetweenFrames(oldCenters,newCenters)
+	sun = SunImage(blurred)
+	print("Sun radius in pixels = {sunRadius}".format(sunRadius=sun.radius))
+	newSunSpots,image = findSunSpots(sun, image, blurred,i,recordTime)
+	timePairedCenters = matchSpotsBetweenFrames(previousSunSpots, newSunSpots)
 	print(timePairedCenters)
 	for tpc in timePairedCenters:
 		tpcChained = False
 		for chain in activeVectorChains:
-			if chain['positions'][-1][0] == tpc[0][0] and chain['positions'][-1][1] == tpc[0][1]:
-				chain['positions'].append(tpc[1])
+			if chain['sunspots'][-1].cartesianCoords[0] == tpc[0].cartesianCoords[0] and chain['sunspots'][-1].cartesianCoords[1] == tpc[0].cartesianCoords[1]:
+				chain['sunspots'].append(tpc[1])
 				chain['timeElapsed'] += diffT.total_seconds()
+				
 				tpcChained = True
 		if not tpcChained:
-			activeVectorChains.append({'positions':[tpc[0],tpc[1]],'timeElapsed' : diffT.total_seconds()})
+			activeVectorChains.append({'sunspots':[tpc[0],tpc[1]],'timeElapsed' : diffT.total_seconds()})
 
 	for tpc in timePairedCenters:
-		cv2.arrowedLine(image, tuple(tpc[0]),tuple(tpc[1]),(0, 255, 0),2)
-		tpc = (tpc[0] - np.array(sunCenter),tpc[1] - np.array(sunCenter))
+		cv2.arrowedLine(image, tuple(tpc[0].cartesianCoords),tuple(tpc[1].cartesianCoords),(0, 255, 0),2)
+		tpc = (tpc[0].cartesianCoords - np.array(sun.centerCoords),tpc[1].cartesianCoords - np.array(sun.centerCoords))
 		diffX = tpc[1] - tpc[0]
 		print("X = ({X1},{X2})".format(X1=tpc[0][0],X2=tpc[0][1]))
 		print("DX = ({DX1},{DX2})\n".format(DX1=diffX[0],DX2=diffX[1]))
-		l0 = (toOrthographicSphereCoords(tpc[0][0],tpc[0][1], sunRadius)/math.pi)*180
-		l1 = (toOrthographicSphereCoords(tpc[1][0],tpc[1][1], sunRadius)/math.pi)*180
+		l0 = (toOrthographicSphereCoords(tpc[0][0],tpc[0][1], sun.radius)/math.pi)*180
+		l1 = (toOrthographicSphereCoords(tpc[1][0],tpc[1][1], sun.radius)/math.pi)*180
 		print("L = ({L1_0},{L1_1})".format(L1_0=l1[0],L1_1=l1[1]))
 		diffL = l1 - l0
 		print("DL = ({DL1},{DL2})".format(DL1=diffL[0],DL2=diffL[1]))
@@ -172,19 +189,30 @@ for i in imageFilenames:
 			periodOfRotation = (360./(w[0]*86400), 360./(w[1]*86400))
 			print("DL / DT = ({w1},{w2})\n".format(w1=w[0], w2=w[1]))
 			print("P = ({P1},{P2})\n".format(P1=periodOfRotation[0], P2=periodOfRotation[1]))
-			samples = samples.append({'latitude': (l0[1] + l1[1])/2.,'period': periodOfRotation[0]}, ignore_index=True)
+			
 			"""
 			if periodOfRotation[0] > samples['period'].quantile(0.75) or periodOfRotation[0] < samples['period'].quantile(0.25):
 				cv2.imshow("Image", image)
 				cv2.waitKey(0)"""
 
-	oldCenters = newCenters
+	previousSunSpots = newSunSpots
 	if args.display:
 		cv2.imshow("Image", image)
 		cv2.waitKey(500)
 	print("-"*30)
+
+
+
 for chain in activeVectorChains:
-	print(len(chain['positions']),chain['timeElapsed'])
+	if chain['timeElapsed'] > 3600*60:
+		print(len(chain['sunspots']),chain['timeElapsed'])
+		firstSunspotSphericalCoords = chain['sunspots'][0].getOrthographicSphereCoordsDegrees()
+		secondSunspotSphericalCoords = chain['sunspots'][-1].getOrthographicSphereCoordsDegrees()
+		diffL = secondSunspotSphericalCoords - firstSunspotSphericalCoords
+		w = diffL / chain['timeElapsed']
+		periodOfRotation = 360./(w[0]*86400)
+		print(periodOfRotation)
+		samples = samples.append({'latitude': (firstSunspotSphericalCoords[1] + secondSunspotSphericalCoords[1])/2.,'period': periodOfRotation}, ignore_index=True)
 #plt.hexbin(latitudeSamples,periodSamples,gridsize=(15,150))
 plt.scatter(samples['latitude'],samples['period'],s=4)
 samples['bucket'] = pd.cut(samples['latitude'],np.arange(-60,60,5))
