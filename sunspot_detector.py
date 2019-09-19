@@ -12,9 +12,14 @@ from datetime import datetime
 
 ap = argparse.ArgumentParser()
 ap.add_argument("-i", "--images", required=True, help="Path to the image folder")
-ap.add_argument('-d', "--display", help='Display image frames during processing', action='store_true')
+ap.add_argument('-d', "--display", help='Display image frames and sunspot information during processing', action='store_true')
 
 args = ap.parse_args()
+
+def round_to_n(x, n):
+    format = "%." + str(n-1) + "e"
+    as_string = format % x
+    return float(as_string)
 
 class SunImage:
     def __init__(self,image):
@@ -78,18 +83,49 @@ def findSunspotUncertainty(sunspot):
     sunRadiusUncertainty = 3
     sunCenterUncertainty = 2
     sunspotPositionUncertainty = 1
-    sunspotTimeUncertainty = 30
     sunspotCopy = copy.deepcopy(sunspot)
+    minPositionDegrees = [1000,1000]
+    maxPositionDegrees = [-1000,-1000]
     for possibleVariance in itertools.product([-1,1],[-1,1],[-1,1],[-1,1],[-1,1],[-1,1]):
         sunspotCopy.sunImage.radius = sunspot.sunImage.radius + possibleVariance[0]*sunRadiusUncertainty
-        sunspotCopy.sunImage.centerCoords[0] = sunspot.sunImage.centerCoords[0] + possibleVariance[1]*sunCenterUncertainty
-        sunspotCopy.sunImage.centerCoords[1] = sunspot.sunImage.centerCoords[1] + possibleVariance[2]*sunCenterUncertainty
-        sunspotCopy.cartesianCoords[0] = sunspot.cartesianCoords[0] + possibleVariance[2]*sunspotPositionUncertainty
-        sunspotCopy.cartesianCoords[1] = sunspot.cartesianCoords[1] + possibleVariance[3]*sunspotPositionUncertainty
+        sunspotCopy.sunImage.centerCoords = (sunspot.sunImage.centerCoords[0] + possibleVariance[1]*sunCenterUncertainty,
+                                            sunspot.sunImage.centerCoords[1] + possibleVariance[2]*sunCenterUncertainty)
+        sunspotCopy.cartesianCoords = (sunspot.cartesianCoords[0] + possibleVariance[3]*sunspotPositionUncertainty,
+                                    sunspot.cartesianCoords[1] + possibleVariance[4]*sunspotPositionUncertainty)
         #sunspotCopy.time = 
-        print(sunspotCopy.getOrthographicSphereCoordsDegrees())
-
+        possiblePositionDegrees = sunspotCopy.getOrthographicSphereCoordsDegrees()
+        minPositionDegrees[0] = min(minPositionDegrees[0], possiblePositionDegrees[0])
+        minPositionDegrees[1] = min(minPositionDegrees[1], possiblePositionDegrees[1])
+        maxPositionDegrees[0] = max(maxPositionDegrees[0], possiblePositionDegrees[0])
+        maxPositionDegrees[1] = max(maxPositionDegrees[1], possiblePositionDegrees[1])
     
+    midPositionDegrees = sunspotCopy.getOrthographicSphereCoordsDegrees()
+    uncertaintyPercentFromLower = abs((np.array(midPositionDegrees) - np.array(minPositionDegrees))/midPositionDegrees)
+    uncertaintyPercentFromUpper = abs((np.array(maxPositionDegrees) - np.array(midPositionDegrees))/midPositionDegrees)
+    return(max(uncertaintyPercentFromLower[0],uncertaintyPercentFromUpper[0]),max(uncertaintyPercentFromLower[1],uncertaintyPercentFromUpper[1]))
+
+def displayImageAndSunSpotInfo(sun, timePairedCenters):
+    for tpc in timePairedCenters:
+        cv2.arrowedLine(image, tuple(tpc[0].cartesianCoords),tuple(tpc[1].cartesianCoords),(0, 255, 0),2)
+        tpc = (tpc[0].cartesianCoords - np.array(sun.centerCoords),tpc[1].cartesianCoords - np.array(sun.centerCoords))
+        diffX = tpc[1] - tpc[0]
+        print("X = ({X1},{X2})".format(X1=tpc[0][0],X2=tpc[0][1]))
+        print("DX = ({DX1},{DX2})\n".format(DX1=diffX[0],DX2=diffX[1]))
+        l0 = (toOrthographicSphereCoords(tpc[0][0],tpc[0][1], sun.radius)/math.pi)*180
+        l1 = (toOrthographicSphereCoords(tpc[1][0],tpc[1][1], sun.radius)/math.pi)*180
+        print("L = ({L1_0},{L1_1})".format(L1_0=l1[0],L1_1=l1[1]))
+        diffL = l1 - l0
+        print("DL = ({DL1},{DL2})".format(DL1=diffL[0],DL2=diffL[1]))
+        print(diffT)
+        if diffT:
+            w = diffL / diffT.total_seconds()
+            periodOfRotation = (360./(w[0]*86400), 360./(w[1]*86400))
+            print("DL / DT = ({w1},{w2})\n".format(w1=w[0], w2=w[1]))
+            print("P = ({P1},{P2})\n".format(P1=periodOfRotation[0], P2=periodOfRotation[1]))
+    
+    cv2.imshow("Image", image)
+    cv2.waitKey(500)
+    print("-"*30)
     
 def toOrthographicSphereCoords(x,y, R):
     p = np.sqrt(x**2 + y**2)
@@ -165,6 +201,75 @@ def findSunSpots(sun, image, blurred, imagefilename, imagetime):
     cv2.circle(image, sun.centerCoords, sun.radius, (0,255,0), 2)
     return sunSpots,image
 
+def generateSunspotRotationRecord(firstSunspot, secondSunspot):
+    firstSunspotMeasurementSphericalCoords = firstSunspot.getOrthographicSphereCoordsDegrees()
+    firstSunspotMeasurementUncertainty = findSunspotUncertainty(firstSunspot)
+
+    secondSunspotMeasurementSphericalCoords = secondSunspot.getOrthographicSphereCoordsDegrees()
+    secondSunspotMeasurementUncertainty = findSunspotUncertainty(secondSunspot)
+
+    averageLat = (secondSunspotMeasurementSphericalCoords[1] + firstSunspotMeasurementSphericalCoords[1])/2
+    averageLatUncert = secondSunspotMeasurementSphericalCoords[1] * secondSunspotMeasurementUncertainty[1] + \
+                       firstSunspotMeasurementSphericalCoords[1] * firstSunspotMeasurementUncertainty[1]
+
+    averageLatitudeString = "{lat}{dir}±{uncert}".format(lat=round_to_n(abs(averageLat),3),
+                dir = 'N' if averageLat < 0 else 'S',
+                uncert=round_to_n(averageLatUncert,2))
+    
+
+    diffL = abs(secondSunspotMeasurementSphericalCoords[0] - firstSunspotMeasurementSphericalCoords[0])
+    diffLUncert = abs(secondSunspotMeasurementSphericalCoords[0] * secondSunspotMeasurementUncertainty[0] + \
+                  firstSunspotMeasurementSphericalCoords[0] * firstSunspotMeasurementUncertainty[0])
+
+    diffLString = "{long}±{uncert}".format(long=round_to_n(abs(diffL),3),
+                uncert=round_to_n(diffLUncert,2))
+
+    diffT = (secondSunspot.time - firstSunspot.time).total_seconds()
+    diffTUncert = 1800 + 1800
+
+    diffTString = "{timediff}±{uncert}".format(timediff=round_to_n(diffT/3600.,3),
+            uncert=round_to_n(diffTUncert/3600.,2))
+
+    w = diffL / diffT
+    wUncert = abs(w*( diffLUncert/diffL + diffTUncert/diffT ))
+
+    wString = "{w}±{uncert}".format(w=round_to_n(w*3600.,3),
+            uncert=round_to_n(wUncert*3600.,2))
+
+    periodOfRotation = 360./(w*86400)
+    periodOfRotationUncert = abs(periodOfRotation*(wUncert/w))
+
+    periodString = "{period}±{uncert}".format(period=round_to_n(periodOfRotation,3),
+        uncert=round_to_n(periodOfRotationUncert,2))
+
+    sunspotRotationRecord = {'Average Latitude' : averageLatitudeString,'Longitude Difference' : diffLString, 'Time Difference (h)' : diffTString,
+                             'Rotational Speed (degrees/h)' : wString, 'Rotational Period (d)' : periodString }
+    return sunspotRotationRecord
+    
+
+def generateSunspotRecord(sunspot):
+    sunspotMeasurementSphericalCoords = sunspot.getOrthographicSphereCoordsDegrees()
+    sunspotMeasurementArea = sunspot.getOrthographicSphereAreaDegreesSqrd()
+    sunspotMeasurementUncertainty = findSunspotUncertainty(sunspot)
+
+    sunspotLongitudeString = "{long}{dir}±{uncert}".format(long=round_to_n(abs(sunspotMeasurementSphericalCoords[0]),3),
+                            dir = 'E' if sunspotMeasurementSphericalCoords[0] > 0 else 'W',
+                            uncert=round_to_n(sunspotMeasurementUncertainty[0]*abs(sunspotMeasurementSphericalCoords[0]),2))
+
+    sunspotLatitudeString = "{lat}{dir}±{uncert}".format(lat=round_to_n(abs(sunspotMeasurementSphericalCoords[1]),3),
+                    dir = 'N' if sunspotMeasurementSphericalCoords[1] < 0 else 'S',
+                    uncert=round_to_n(sunspotMeasurementUncertainty[1]*abs(sunspotMeasurementSphericalCoords[1]),2))
+
+    sunspotAreaString = "{area}±0".format(area=round_to_n(sunspotMeasurementArea,3))
+
+    sunspotRecord = {
+        'Image Filename' : sunspot.filename,
+        'Sunspot Longitude' : sunspotLongitudeString, 'Sunspot Latitude' : sunspotLatitudeString,
+        'Sunspot Area' : sunspotAreaString, 'Date & Time' : sunspot.time
+    }
+    return sunspotRecord
+
+#Get all image files in the 
 imageFilenames = glob.glob("{imagePath}/*.jpg".format(imagePath=args.images)) + glob.glob("{imagePath}/*.png".format(imagePath=args.images))
 imageFilenames.sort()
 
@@ -174,87 +279,84 @@ diffT = None
 samples = pd.DataFrame(columns=['latitude','period'])
 activeVectorChains = []
 for i in imageFilenames:
+
+    #Get the time and date the image was recorded 
     timeString = re.search(r'[\d]{8}_[\d]{4}', i).group()
     recordTime = datetime.strptime(timeString, '%Y%m%d_%H%M')
     print(str(recordTime)+":")
+    print(i)
     if lastRecordTime:
         diffT = recordTime - lastRecordTime
         print("DT = {DT}\n".format(DT=diffT))
     lastRecordTime = recordTime
+
     # load image, convert to grayscale, and blur it
     image = cv2.imread(i)
-
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = ~gray
-    
-    #gray[gray > 250] = 0
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    #blurred = gray
+
+    #Find the radius and center of the solar disc in the image
     sun = SunImage(blurred)
-    print("Sun radius in pixels = {sunRadius}".format(sunRadius=sun.radius))
+
+    #Find sunspots in the image
     newSunSpots,image = findSunSpots(sun, image, blurred,i,recordTime)
+
+    #Find the matching sunspot images between this frame and previous frame.
     timePairedCenters = matchSpotsBetweenFrames(previousSunSpots, newSunSpots)
-    print(timePairedCenters)
+    previousSunSpots = newSunSpots
+
     for tpc in timePairedCenters:
         tpcChained = False
         for chain in activeVectorChains:
-            if chain['sunspots'][-1].cartesianCoords[0] == tpc[0].cartesianCoords[0] and chain['sunspots'][-1].cartesianCoords[1] == tpc[0].cartesianCoords[1]:
+            if chain['sunspots'][-1].cartesianCoords[0] == tpc[0].cartesianCoords[0] and \
+             chain['sunspots'][-1].cartesianCoords[1] == tpc[0].cartesianCoords[1]:
+
                 chain['sunspots'].append(tpc[1])
                 chain['timeElapsed'] += diffT.total_seconds()
                 
                 tpcChained = True
+
         if not tpcChained:
             activeVectorChains.append({'sunspots': [tpc[0], tpc[1]],'timeElapsed' : diffT.total_seconds()})
 
-    for tpc in timePairedCenters:
-        cv2.arrowedLine(image, tuple(tpc[0].cartesianCoords),tuple(tpc[1].cartesianCoords),(0, 255, 0),2)
-        tpc = (tpc[0].cartesianCoords - np.array(sun.centerCoords),tpc[1].cartesianCoords - np.array(sun.centerCoords))
-        diffX = tpc[1] - tpc[0]
-        print("X = ({X1},{X2})".format(X1=tpc[0][0],X2=tpc[0][1]))
-        print("DX = ({DX1},{DX2})\n".format(DX1=diffX[0],DX2=diffX[1]))
-        l0 = (toOrthographicSphereCoords(tpc[0][0],tpc[0][1], sun.radius)/math.pi)*180
-        l1 = (toOrthographicSphereCoords(tpc[1][0],tpc[1][1], sun.radius)/math.pi)*180
-        print("L = ({L1_0},{L1_1})".format(L1_0=l1[0],L1_1=l1[1]))
-        diffL = l1 - l0
-        print("DL = ({DL1},{DL2})".format(DL1=diffL[0],DL2=diffL[1]))
-        print(diffT)
-        if diffT:
-            w = diffL / diffT.total_seconds()
-            periodOfRotation = (360./(w[0]*86400), 360./(w[1]*86400))
-            print("DL / DT = ({w1},{w2})\n".format(w1=w[0], w2=w[1]))
-            print("P = ({P1},{P2})\n".format(P1=periodOfRotation[0], P2=periodOfRotation[1]))
-            
-            """
-            if periodOfRotation[0] > samples['period'].quantile(0.75) or periodOfRotation[0] < samples['period'].quantile(0.25):
-                cv2.imshow("Image", image)
-                cv2.waitKey(0)"""
-
-    previousSunSpots = newSunSpots
     if args.display:
-        cv2.imshow("Image", image)
-        cv2.waitKey(500)
-    print("-"*30)
+        displayImageAndSunSpotInfo(sun, timePairedCenters)
 
+sunspotChainCount = 0
 
+firstSunspotMeasurements = pd.DataFrame(columns=['Image Filename','Sunspot Longitude', 'Sunspot Latitude',
+                                                 'Sunspot Area', 'Date & Time' ])
+secondSunspotMeasurements = pd.DataFrame(columns=['Image Filename','Sunspot Longitude', 'Sunspot Latitude',
+                                                 'Sunspot Area', 'Date & Time' ])
+sunspotRotationTable = pd.DataFrame(columns=['Average Latitude','Longitude Difference', 'Time Difference (h)',
+                                                 'Rotational Speed (degrees/h)', 'Rotational Period (d)' ])
 
 for chain in activeVectorChains:
     if chain['timeElapsed'] > 3600*60:
-        print(len(chain['sunspots']),chain['timeElapsed'])
-        firstSunspotSphericalCoords = chain['sunspots'][0].getOrthographicSphereCoordsDegrees()
-        secondSunspotSphericalCoords = chain['sunspots'][-1].getOrthographicSphereCoordsDegrees()
-        print("Area: " + str(chain['sunspots'][-1].getOrthographicSphereAreaDegreesSqrd()))
-        print("Area: " + str(chain['sunspots'][0].getOrthographicSphereAreaDegreesSqrd()))
-        diffL = secondSunspotSphericalCoords - firstSunspotSphericalCoords
+        #print(len(chain['sunspots']),chain['timeElapsed'])
+
+        firstSunspotMeasurements = firstSunspotMeasurements.append(generateSunspotRecord(chain['sunspots'][0]),ignore_index=True)
+
+        secondSunspotMeasurements = secondSunspotMeasurements.append(generateSunspotRecord(chain['sunspots'][-1]),ignore_index=True)
+
+        sunspotRotationTable = sunspotRotationTable.append(generateSunspotRotationRecord(chain['sunspots'][0], chain['sunspots'][-1]),ignore_index=True)
+        '''diffL = secondSunspotSphericalCoords - firstSunspotSphericalCoords
         w = diffL / chain['timeElapsed']
         periodOfRotation = 360./(w[0]*86400)
         print(periodOfRotation)
         samples = samples.append({'latitude': (firstSunspotSphericalCoords[1] + secondSunspotSphericalCoords[1])/2.,'period': periodOfRotation}, ignore_index=True)
+        '''
         print("Uncertainties: ")
-        findSunspotUncertainty(chain['sunspots'][0])
-        print("-"*20)
+        print(findSunspotUncertainty(chain['sunspots'][0]))
+        sunspotChainCount += 1
+        print("-"*30)
 #plt.hexbin(latitudeSamples,periodSamples,gridsize=(15,150))
-plt.scatter(samples['latitude'],samples['period'],s=4)
-samples['bucket'] = pd.cut(samples['latitude'],np.arange(-60,60,5))
-print(samples.groupby(samples['bucket'])['period'].median())
-plt.ylim(10,50)
-plt.show()
+#plt.scatter(samples['latitude'],samples['period'],s=4)
+#samples['bucket'] = pd.cut(samples['latitude'],np.arange(-60,60,5))
+#print(samples.groupby(samples['bucket'])['period'].median())
+print(firstSunspotMeasurements)
+print(secondSunspotMeasurements)
+print(sunspotRotationTable)
+#plt.ylim(10,50)
+#plt.show()
