@@ -333,30 +333,53 @@ sunspotRotationTable = pd.DataFrame(columns=['Average Latitude','Longitude Diffe
                                                  'Rotational Speed (degrees/h)', 'Rotational Period (d)' ])
 
 for chain in activeVectorChains:
-    if chain['timeElapsed'] > 3600*60:
-        #print(len(chain['sunspots']),chain['timeElapsed'])
+    #if chain['timeElapsed'] > 3600*60:
+    #print(len(chain['sunspots']),chain['timeElapsed'])
 
-        firstSunspotMeasurements = firstSunspotMeasurements.append(generateSunspotRecord(chain['sunspots'][0]),ignore_index=True)
+    #Uncertainty at the edges of the sun is higher so lets move in until we get below a threshold of uncertainty.
+    beginningSunspot = None
+    endSunspot = None
+    countOfSunspotBeginning = 0
+    for ss in chain['sunspots']:
+        if abs(findSunspotUncertainty(ss)[0]*ss.getOrthographicSphereCoordsDegrees()[0]) < 3.0:
+            beginningSunspot = ss
+            break
+        countOfSunspotBeginning+=1
+    if not beginningSunspot:
+        continue
+    for ss in chain['sunspots'][countOfSunspotBeginning-1::-1]:
+        if abs(findSunspotUncertainty(ss)[0]*ss.getOrthographicSphereCoordsDegrees()[0]) < 3.0:
+            endSunspot = ss
+            break
+    if not endSunspot:
+        continue
+    if (endSunspot.time - beginningSunspot.time).total_seconds() < 60*60*12:
+        continue
+        
+    firstSunspotMeasurements = firstSunspotMeasurements.append(generateSunspotRecord(beginningSunspot),ignore_index=True)
 
-        secondSunspotMeasurements = secondSunspotMeasurements.append(generateSunspotRecord(chain['sunspots'][-1]),ignore_index=True)
+    secondSunspotMeasurements = secondSunspotMeasurements.append(generateSunspotRecord(endSunspot),ignore_index=True)
 
-        sunspotRotationTable = sunspotRotationTable.append(generateSunspotRotationRecord(chain['sunspots'][0], chain['sunspots'][-1]),ignore_index=True)
-        '''diffL = secondSunspotSphericalCoords - firstSunspotSphericalCoords
-        w = diffL / chain['timeElapsed']
-        periodOfRotation = 360./(w[0]*86400)
-        print(periodOfRotation)
-        samples = samples.append({'latitude': (firstSunspotSphericalCoords[1] + secondSunspotSphericalCoords[1])/2.,'period': periodOfRotation}, ignore_index=True)
-        '''
-        print("Uncertainties: ")
-        print(findSunspotUncertainty(chain['sunspots'][0]))
-        sunspotChainCount += 1
-        print("-"*30)
+    sunspotRotationTable = sunspotRotationTable.append(generateSunspotRotationRecord(beginningSunspot, endSunspot),ignore_index=True)
+    '''diffL = secondSunspotSphericalCoords - firstSunspotSphericalCoords
+    w = diffL / chain['timeElapsed']
+    periodOfRotation = 360./(w[0]*86400)
+    print(periodOfRotation)
+    samples = samples.append({'latitude': (firstSunspotSphericalCoords[1] + secondSunspotSphericalCoords[1])/2.,'period': periodOfRotation}, ignore_index=True)
+    '''
+    '''print("Uncertainties: ")
+    print(findSunspotUncertainty(chain['sunspots'][0]))
+    sunspotChainCount += 1
+    print("-"*30)'''
 #plt.hexbin(latitudeSamples,periodSamples,gridsize=(15,150))
 #plt.scatter(samples['latitude'],samples['period'],s=4)
 #samples['bucket'] = pd.cut(samples['latitude'],np.arange(-60,60,5))
 #print(samples.groupby(samples['bucket'])['period'].median())
 print(firstSunspotMeasurements)
+firstSunspotMeasurements.to_csv("firstSunspotMeasurements.csv")
 print(secondSunspotMeasurements)
+secondSunspotMeasurements.to_csv("secondSunspotMeasurements.csv")
 print(sunspotRotationTable)
+sunspotRotationTable.to_csv("sunspotRotationTable.csv")
 #plt.ylim(10,50)
 #plt.show()
