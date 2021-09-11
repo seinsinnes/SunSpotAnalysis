@@ -3,7 +3,7 @@ A tool to track sunspots and estimate solar rotation from Solar and Heliospheric
 
 Usage:
 ```
-python sunspot_detector.py -i SOHO_Images
+python sunspot_tracker.py -i SOHO_Images
 ```
 
 Adding `-d` gives visual feedback on the sunspot detection and motion tracking in the images.  
