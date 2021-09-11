@@ -1,3 +1,6 @@
 imutils
 opencv-python
 scikit-image
+matplotlib
+pandas
+numpy
